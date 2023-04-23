@@ -21,6 +21,7 @@ sdist/
 var/
 wheels/
 *.egg-info/
+
 .installed.cfg
 *.egg
 MANIFEST
@@ -102,3 +103,5 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+# MIMIC3 분리
+/mimic3-benchmarks

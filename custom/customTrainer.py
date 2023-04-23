@@ -9,9 +9,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix
-from sklearn.metrics import roc_auc_score, average_precision_score
-from torcheval.metrics import BinaryAUROC
-import numpy as np
+import readerToDataLoader
+
 class NeuralNetworkClassifier:
     """
     | NeuralNetworkClassifier depend on `Comet-ML <https://www.comet.ml/>`_ .
@@ -90,11 +89,12 @@ class NeuralNetworkClassifier:
         ImportError: You must import Comet before these modules: torch
 
     """
-    def __init__(self, model, criterion, optimizer, optimizer_config: dict) -> None:
+    def __init__(self, model, criterion, optimizer, optimizer_config: dict, experiment) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.optimizer = optimizer(self.model.parameters(), **optimizer_config)
         self.criterion = criterion
+        self.experiment = experiment
 
         self.hyper_params = optimizer_config
         self._start_epoch = 0
@@ -109,7 +109,13 @@ class NeuralNetworkClassifier:
             notice = "Running on {} GPUs.".format(torch.cuda.device_count())
             print("\033[33m" + notice + "\033[0m")
 
-    def fit(self, loader: Dict[str, DataLoader], epochs: int, checkpoint_path: str = None, validation: bool = True) -> None:
+    def fit(self, readerResult: Dict[str, tuple], epochs: int, checkpoint_path: str = None, validation: bool = True) -> None:
+        trainLoader = readerToDataLoader(readerResult["train"])
+        valLoader = readerToDataLoader(readerResult["val"])
+        loader = {
+            "train" : trainLoader,
+            "val" : valLoader
+        }
         """
         | The method of training your PyTorch Model.
         | With the assumption, This method use for training network for classification.
@@ -148,12 +154,12 @@ class NeuralNetworkClassifier:
             len_of_val_dataset = len(loader["val"].dataset)
             self.hyper_params["val_ds_size"] = len_of_val_dataset
 
-        # self.experiment.log_parameters(self.hyper_params)
+        self.experiment.log_parameters(self.hyper_params)
 
         for epoch in range(self._start_epoch, epochs):
             if checkpoint_path is not None and epoch % 100 == 0:
                 self.save_to_file(checkpoint_path)
-            # with self.experiment.train():
+            with self.experiment.train():
                 correct = 0.0
                 total = 0.0
 
@@ -179,28 +185,28 @@ class NeuralNetworkClassifier:
                     _, predicted = torch.max(outputs, 1)
                     correct += (predicted == y).sum().float().cpu().item()
 
-                    # self.experiment.log_metric("loss", loss.cpu().item(), step=epoch)
-                    # self.experiment.log_metric("accuracy", float(correct / total), step=epoch)
+                    self.experiment.log_metric("loss", loss.cpu().item(), step=epoch)
+                    self.experiment.log_metric("accuracy", float(correct / total), step=epoch)
             if validation:
-                # with self.experiment.validate():
-                with torch.no_grad():
-                    val_correct = 0.0
-                    val_total = 0.0
+                with self.experiment.validate():
+                    with torch.no_grad():
+                        val_correct = 0.0
+                        val_total = 0.0
 
-                    self.model.eval()
-                    for x_val, y_val in loader["val"]:
-                        val_total += y_val.shape[0]
-                        x_val = x_val.to(self.device) if isinstance(x_val, torch.Tensor) else [i_val.to(self.device) for i_val in x_val]
-                        y_val = y_val.to(self.device)
+                        self.model.eval()
+                        for x_val, y_val in loader["val"]:
+                            val_total += y_val.shape[0]
+                            x_val = x_val.to(self.device) if isinstance(x_val, torch.Tensor) else [i_val.to(self.device) for i_val in x_val]
+                            y_val = y_val.to(self.device)
 
-                        val_output = self.model(x_val)
-                        val_loss = self.criterion(val_output, y_val)
-                        _, val_pred = torch.max(val_output, 1)
-                        val_correct += (val_pred == y_val).sum().float().cpu().item()
+                            val_output = self.model(x_val)
+                            val_loss = self.criterion(val_output, y_val)
+                            _, val_pred = torch.max(val_output, 1)
+                            val_correct += (val_pred == y_val).sum().float().cpu().item()
 
-                            # self.experiment.log_metric("loss", val_loss.cpu().item(), step=epoch)
-                            # self.experiment.log_metric("accuracy", float(val_correct / val_total), step=epoch)
-            #
+                            self.experiment.log_metric("loss", val_loss.cpu().item(), step=epoch)
+                            self.experiment.log_metric("accuracy", float(val_correct / val_total), step=epoch)
+
             pbar.close()
 
     def evaluate(self, loader: DataLoader, verbose: bool = False) -> None or float:
@@ -226,51 +232,33 @@ class NeuralNetworkClassifier:
         pbar = tqdm.tqdm(total=len(loader.dataset))
 
         self.model.eval()
-        # self.experiment.log_parameter("test_ds_size", len(loader.dataset))
-        preds = []
-        true_labels = []
-        # with self.experiment.test():
-        with torch.no_grad():
-            correct = 0.0
-            total = 0.0
-            for x, y in loader:
-                b_size = y.shape[0]
-                total += y.shape[0]
-                x = x.to(self.device) if isinstance(x, torch.Tensor) else [i.to(self.device) for i in x]
-                y = y.to(self.device)
+        self.experiment.log_parameter("test_ds_size", len(loader.dataset))
 
-                pbar.set_description("\033[32m"+"Evaluating"+"\033[0m")
-                pbar.update(b_size)
+        with self.experiment.test():
+            with torch.no_grad():
+                correct = 0.0
+                total = 0.0
+                for x, y in loader:
+                    b_size = y.shape[0]
+                    total += y.shape[0]
+                    x = x.to(self.device) if isinstance(x, torch.Tensor) else [i.to(self.device) for i in x]
+                    y = y.to(self.device)
 
-                outputs = self.model(x)
-                loss = self.criterion(outputs, y)
-                _, val_pred = torch.max(outputs, 1)
-                preds = np.append(preds,val_pred.cpu().numpy())
-                # preds.append()
-                # true_labels.append(y.cpu().numpy())
-                true_labels = np.append(true_labels, y.cpu().numpy())
-                _, predicted = torch.max(outputs, 1)
-                correct += (predicted == y).sum().float().cpu().item()
+                    pbar.set_description("\033[32m"+"Evaluating"+"\033[0m")
+                    pbar.update(b_size)
 
-                running_loss += loss.cpu().item()
-                running_corrects += torch.sum(predicted == y).float().cpu().item()
+                    outputs = self.model(x)
+                    loss = self.criterion(outputs, y)
+                    _, predicted = torch.max(outputs, 1)
+                    correct += (predicted == y).sum().float().cpu().item()
 
-                    # self.experiment.log_metric("loss", running_loss)
-                    # self.experiment.log_metric("accuracy", float(running_corrects / total))
+                    running_loss += loss.cpu().item()
+                    running_corrects += torch.sum(predicted == y).float().cpu().item()
 
-
-
-
+                    self.experiment.log_metric("loss", running_loss)
+                    self.experiment.log_metric("accuracy", float(running_corrects / total))
                 pbar.close()
-            auroc = roc_auc_score(true_labels, preds)
-            auprc = average_precision_score(true_labels, preds)
             acc = self.experiment.get_metric("accuracy")
-            # self.experiment.log_metric("auroc", auroc)
-            # self.experiment.log_metric("auprc", auprc)
-            print("=====")
-            print("loss :", loss)
-            print("auroc :", auroc)
-            print("auprc :", auprc)
 
         print("\033[33m" + "Evaluation finished. " + "\033[0m" + "Accuracy: {:.4f}".format(acc))
 

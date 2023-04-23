@@ -2,18 +2,30 @@ import torch
 import numpy as np
 
 
-def positional_encoding(n_positions: int, hidden_dim: int) -> torch.Tensor:
-    def calc_angles(pos, i):
-        rates = 1 / np.power(10000, (2*(i // 2)) / np.float32(hidden_dim))
-        return pos * rates
+def positional_encoding(max_len, d_model):
+    """
+    Returns positional encoding for a sequence of max_len tokens
+    with a model of dimension d_model.
 
-    rads = calc_angles(np.arange(n_positions)[:, np.newaxis], np.arange(hidden_dim)[np.newaxis, :])
+    Args:
+    - max_len (int): the maximum sequence length
+    - d_model (int): the dimension of the model
 
-    rads[:, 0::2] = np.sin(rads[:, 0::2])
-    rads[:, 1::2] = np.cos(rads[:, 1::2])
+    Returns:
+    - pos_enc (torch.Tensor): tensor of shape (max_len, d_model)
+    """
+    pos = torch.arange(max_len).unsqueeze(1)
+    i = torch.arange(d_model).unsqueeze(0)
+    angle_rates = 1 / torch.pow(10000, (2 * (i // 2)) / d_model)
+    angle_rads = pos * angle_rates
+    pos_enc = torch.zeros((max_len, d_model))
 
-    pos_enc = rads[np.newaxis, ...]
-    pos_enc = torch.tensor(pos_enc, dtype=torch.float32, requires_grad=False)
+    # apply sin to even indices in the tensor; 2i
+    pos_enc[:, 0::2] = torch.sin(angle_rads[:, 0::2])
+
+    # apply cos to odd indices in the tensor; 2i+1
+    pos_enc[:, 1::2] = torch.cos(angle_rads[:, 1::2])
+
     return pos_enc
 
 
